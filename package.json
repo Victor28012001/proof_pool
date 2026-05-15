@@ -1,0 +1,43 @@
+{
+  "name": "stipend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "setup:stellar": "node scripts/setup-stellar.mjs",
+    "balances": "node scripts/balances.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.76",
+    "@ai-sdk/google": "^3.0.71",
+    "@ai-sdk/openai": "^3.0.63",
+    "@anthropic-ai/sdk": "^0.95.1",
+    "@creit.tech/stellar-wallets-kit": "^2.2.0",
+    "@neondatabase/serverless": "^1.1.0",
+    "@stellar/stellar-sdk": "^15.1.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@vercel/functions": "^3.5.1",
+    "ai": "^6.0.177",
+    "better-sqlite3": "^12.9.0",
+    "geist": "^1.7.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
+    "next": "16.2.6",
+    "react": "19.2.4",
+    "react-dom": "^19.2.4",
+    "x402": "^1.2.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.6",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

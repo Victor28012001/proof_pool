@@ -1,0 +1,24 @@
+:root {
+  --geist-font-sans: 'Geist', Inter, system-ui, sans-serif;
+  --geist-font-mono: 'Geist Mono', ui-monospace, monospace;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+body {
+  background: #F8F8F6;
+  font-family: var(--geist-font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+button {
+  font-family: inherit;
+}

@@ -289,7 +289,6 @@ export function BountyAppWrapper({ onBack }: { onBack?: () => void }) {
   );
 }
 
-// BountyApp component similar to your StipendApp but for competitions
 function BountyApp({
   status,
   bountyBundle,

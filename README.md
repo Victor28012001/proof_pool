@@ -1,206 +1,191 @@
-# Stipend
+# ProofPool
 
-**Give your AI research agent a budget, not your credit card.**
+Decentralized competition protocol on Stellar — bounty funds lock in escrow, teams compete transparently, and payouts are automated.
 
-Stipend is an escrow-gated AI research agent on Stellar. Funds lock in a Trustless Work escrow when you ask a question. The agent researches with real web tools. An adversarial LLM verifier reviews the output. Funds release only on verified delivery.
+ProofPool is a trust-minimized bounty protocol where creators lock prize pools in Trustless Work escrows on Stellar. Teams register with wallet-based identities, submit work, and are evaluated through a hybrid scoring system: expert judges (70%), constrained peer review (20%), and self-evaluation (10%). If judges miss deadlines, the protocol auto-resolves based on community votes. Funds are released automatically to team wallets — no rug pulls, no centralized favoritism.
 
-## Architecture
+Architecture
+text
+Next.js UI ◄──► ProofPool **API** (SQLite) ◄──► Trustless Work (Stellar escrow)
+    │
+    ┌──────────┼──────────┐
+    │          │          │
+    Teams       Judges     Peer Review
+    Register    Score All   Random Assignment
+    Submit      Entries    (Self + 1 Peer)
+Setup
 
-```
-Next.js UI ◄──► Stipend API (SQLite) ◄──► Trustless Work (Stellar escrow)
-                                 │
-                           Agent Runtime ──► web_search / web_fetch (x402 micropayments)
-                                 │
-                          Adversarial Verifier (Claude Haiku, temperature 0)
-```
+## Install dependencies
 
----
-
-## Setup
-
-### 1. Install dependencies
-
-```bash
+bash
 npm install
-```
 
-### 2. Configure environment
+## Configure environment
 
-```bash
+bash
 cp .env.example .env.local
-```
+Open .env.local and fill in the required values:
 
-Open `.env.local` and fill in the required values:
+Trustless Work (testnet escrow) env TW_API_BASE=[https://dev.api.trustlesswork.com](https://dev.api.trustlesswork.com) TW_API_KEY=<your-key>          # From [https://dapp.dev.trustlesswork.com](https://dapp.dev.trustlesswork.com) → **API** Keys ### Stellar Platform Wallet The platform wallet signs all escrow transactions (deploy, fund, release, resolve).
 
-#### Required
+env PLATFORM_STELLAR_SECRET=S...    # Stellar secret key PLATFORM_STELLAR_PUBLIC_KEY=G... # Stellar public key STELLAR_NETWORK=testnet **USDC** Asset env USDC_STELLAR_ISSUER=**GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5** Database (optional) env # Defaults to SQLite. For production, use PostgreSQL: # DATABASE_URL=postgresql://... ## Fund and configure wallets Both your platform wallet and creator wallet need testnet **XLM** and **USDC** trustlines.
 
-```env
-ANTHROPIC_API_KEY=sk-ant-...   # From https://console.anthropic.com
-```
+Platform wallet setup:
 
-#### Trustless Work (testnet escrow)
+bash # Fund with testnet XLM curl "[https://friendbot.stellar.org?addr=<PLATFORM_PUBLIC_KEY>"](https://friendbot.stellar.org?addr=<PLATFORM_PUBLIC_KEY>")
 
-```env
-TW_API_BASE=https://dev.api.trustlesswork.com
-TW_API_KEY=<your-key>          # From https://dapp.dev.trustlesswork.com → API Keys
-```
+# Visit to add USDC trustline automatically
 
-#### Stellar keypairs
+curl *[http://localhost:**3000**/api/setup*](http://localhost:**3000**/api/setup") Creator wallet setup (Freighter browser extension):
 
-Two server-managed wallets are needed:
-- **Platform wallet** — signs all transactions; acts as approver, release signer, dispute resolver.
-- **Agent wallet** — receives payment when work is verified.
+Install Freighter and switch to Testnet
 
-Because this is a demo environment running on the Stellar testnet, **pre-generated and pre-funded testnet keys are already provided in `.env.example`**. You do not need to generate your own or establish trustlines. Just copy the file!
+Fund with **XLM** via Friendbot
 
-**Fund your Client Wallet (Freighter) with testnet USDC** — You will use the Freighter browser extension to fund tasks:
-1. Install the [Freighter wallet extension](https://freighter.app/) and switch the network to Testnet.
-2. Ensure your Freighter wallet has some testnet XLM (use Friendbot).
-3. Add the testnet USDC asset to your Freighter wallet using the issuer address: `GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5`.
-4. Send testnet USDC to your Freighter wallet address (you can ask in the [Trustless Work Telegram](https://t.me/+kmr8tGegxLU0NTA5) for a faucet drip).
+Add **USDC** asset: issuer **GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5**
 
-**[Optional] Advanced: Setting up custom keys**
-If you prefer not to use the pre-provided demo keys, you can generate your own testnet keypairs. Run:
-```bash
-node -e "const {Keypair}=require('@stellar/stellar-sdk'); const k=Keypair.random(); console.log(k.publicKey(),k.secret())"
-```
-Generate two pairs (Platform and Agent) and update `.env.local`. Then, fund them both with XLM via Friendbot. Finally, run `npm run setup:stellar` to establish the required USDC trustlines on your custom wallets.
+## Run the dev server
 
-### 3. Run the dev server
+bash npm run dev Open [http://localhost:**3000**.](http://localhost:**3000**.)
 
-```bash
-npm run dev
-```
+Using ProofPool Creating a Bounty Connect your wallet — Click *Connect Wallet* to link your Freighter Stellar wallet
 
-Open [http://localhost:3000](http://localhost:3000).
+Click *+ Create Bounty* — Opens the bounty configuration form
 
----
+Fill in details:
 
-## Using the app
+Title & Description — What should teams build?
 
-1. **Enter a research question** in the left panel (e.g. "What was the best film of 2009 and why?")
-2. **Set a USDC budget** (minimum 0.10, maximum 100)
-3. **Click "Create Task"** — registers the task in the in-memory store
-4. **Click "Fund Escrow + Start Agent"** — the server:
-   - Deploys a single-release escrow on Stellar testnet via Trustless Work API
-   - Signs the Stellar XDR transaction with the platform keypair
-   - Funds the escrow with the specified USDC amount
-   - Starts the Claude research agent in the background
-5. **Watch the live phase log** — the agent works through 5 phases in real-time via SSE streaming
-6. **Click "Run Verifier"** once the agent completes — the adversarial verifier scores the output and re-fetches a citation to check for fabrication
-7. **Funds release automatically** if the verifier approves (avg score ≥ 4.0, no individual score < 3, citation verified)
-8. **Click "Dispute"** if you want to contest the result — puts the escrow into dispute state
+Prize Distribution — Set amounts for 1st, 2nd, 3rd place (and more)
 
----
+Judge Wallets — Enter Stellar addresses of trusted judges
 
-## Manually testing the escrow on the TW dashboard
+Timeline — Set registration end, submission deadline, judging period, and disbursement time
 
-You can create and inspect escrows directly at [dapp.dev.trustlesswork.com](https://dapp.dev.trustlesswork.com). Use these values to mirror the Stipend escrow structure:
+Click *Create & Lock Funds* — The protocol:
 
-| Field | Value |
-|---|---|
-| Type | Single Release |
-| Title | `Stipend Escrow` |
-| Engagement | `stipend-esc` |
-| Trustline | USDC |
-| Approver | `<PLATFORM_STELLAR_PUBLIC_KEY>` |
-| Service Provider | `<AGENT_STELLAR_PUBLIC_KEY>` |
-| Release Signer | `<PLATFORM_STELLAR_PUBLIC_KEY>` |
-| Dispute Resolver | `<PLATFORM_STELLAR_PUBLIC_KEY>` |
-| Platform Address | `<PLATFORM_STELLAR_PUBLIC_KEY>` |
-| Receiver | `<AGENT_STELLAR_PUBLIC_KEY>` |
-| Platform Fee | `0` |
-| Amount | `1` (USDC) |
-| Description | `Escrow-gated AI research delivery via Stipend` |
-| Milestone | `Agent delivers cited, verified research answer` |
+Creates the bounty in the database
 
-> The Stipend app creates its own escrows automatically — this is just for manual testing/inspection.
+Deploys a Trustless Work escrow on Stellar
 
----
+Locks the prize pool in escrow
 
-## Environment variables reference
+Opens registration
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | No | Required if using `anthropic:` provider models. |
-| `OPENAI_API_KEY` | No | Required if using `openai:` provider models. |
-| `AI_GATEWAY_API_KEY` | No | **Recommended**. Single key for all models via Vercel AI Gateway. |
-| `AGENT_MODEL` | No | Model string (e.g. `anthropic/claude-3-5-sonnet-latest`). |
-| `TW_API_BASE` | No | Trustless Work API base URL (omit = mock mode) |
-| `TW_API_KEY` | No | Trustless Work API key (omit = mock mode) |
-| `PLATFORM_STELLAR_SECRET` | No | Platform wallet secret key for signing XDR |
-| `PLATFORM_STELLAR_PUBLIC_KEY` | No | Platform wallet public key |
-| `AGENT_STELLAR_SECRET` | No | Agent wallet secret key |
-| `AGENT_STELLAR_PUBLIC_KEY` | No | Agent wallet public key |
-| `STELLAR_NETWORK` | No | `testnet` (default) or `mainnet` |
-| `USDC_STELLAR_ISSUER` | No | USDC issuer address on Stellar |
-| `TW_VIEWER_BASE` | No | Escrow Viewer base URL for deep links |
-| `X402_SEARCH_ENDPOINT` | No | Defaults to local `/api/x402/search` |
-| `X402_FACILITATOR_URL` | No | Coinbase x402 facilitator for real settlement |
-| `STIPEND_DB_PATH` | No | Custom path for SQLite (e.g. `/data/stipend.db`) |
+Joining a Bounty Browse bounties on the home page
 
-Without `AI_GATEWAY_API_KEY` or provider keys, the agent falls back to a realistic mock. The verifier uses the same model as the agent by default.
+Click a bounty card to view details
 
----
+Connect your wallet and click *Register Team*
 
-## API routes
+Enter team name and wallet address — This wallet receives payouts
 
-| Route | Method | Purpose |
-|---|---|---|
-| `/api/tasks` | POST | Create a research task |
-| `/api/tasks/[id]/fund` | POST | Deploy + fund escrow, start agent |
-| `/api/tasks/[id]/stream` | GET | SSE stream of live task bundle snapshots |
-| `/api/tasks/[id]/release` | POST | Approve milestone + release funds to agent |
-| `/api/tasks/[id]/retry` | POST | Retry a failed agent execution |
-| `/api/tasks/[id]/dispute-retry` | POST | File a dispute with feedback and retry the agent |
-| `/api/verifier` | POST | Run adversarial verifier |
-| `/api/dispute` | POST | File a dispute + resolve with client refund |
-| `/api/x402/search` | GET | x402-enabled mock search endpoint |
-| `/api/tw/webhook` | POST | Trustless Work event webhook |
+Submit your work — Provide an **IPFS** hash or content identifier
 
----
+Voting and Judging Teams vote on:
 
-## Escrow flow (on-chain)
+Their own submission (self-evaluation, 10% weight)
 
-```
-User clicks "Fund Escrow"
-  → POST /deployer/single-release  → unsigned XDR
-  → Sign XDR with platform Stellar keypair
-  → POST /helper/send-transaction  → contractId
+One randomly assigned peer team (peer review, 20% weight)
 
-Agent completes research
-  → Tool calls settled via x402
-  → Cost ticker updated live
+Judges score all submissions on criteria:
 
-Verifier approves
-  → POST /api/tasks/[id]/release
+Creativity, Execution, Impact, Presentation
+
+Judge scores carry 70% weight
+
+Finalization and Payout After judging ends, scores are calculated using the weighted formula
+
+The creator finalizes results
+
+The protocol releases funds from escrow to winning team wallets
+
+### Conflict Resolution
+
+If judges miss the deadline:
+
+The protocol automatically resolves based on community votes
+
+Teams with the highest peer + self scores win
+
+Marked as *auto-resolved* in the results
+
+Funds are non-recoverable by the creator once locked in escrow.
+
+### Scoring Model
+
+Source	Weight
+Expert Judges	70%
+Peer Team Review	20%
+Self Evaluation	10%
+text
+Final Score = (Judge_Avg × 0.7) + (Peer_Score × 0.2) + (Self_Score × 0.1)
+### Bounty Lifecycle
+Phase	Description
+draft	Creator configures bounty
+funded	Prize pool locked in escrow
+registration_open	Teams can register
+submission_closed	Deadline passed, review begins
+voting_open	Teams and judges submit scores
+votes_revealed	All team votes submitted
+judging_complete	All judge scores in
+completed	Winner paid, bounty finished
+auto_resolved	Judges missed deadline, community vote decided
+**API** Routes
+Route	Method	Purpose
+/api/bounties	**GET**	List all bounties
+/api/bounties	**POST**	Create a new bounty
+/api/bounties/[id]	**GET**	Get bounty details
+/api/bounties/[id]	**DELETE**	Remove draft bounty (if funding fails)
+/api/bounties/[id]/fund	**POST**	Deploy escrow + lock funds
+/api/bounties/[id]/register	**POST**	Register a team
+/api/bounties/[id]/submit	**POST**	Submit team work
+/api/bounties/[id]/vote	**POST**	Submit team votes (self + peer)
+/api/bounties/[id]/judge	**POST**	Submit judge scores
+/api/bounties/[id]/finalize	**POST**	Calculate results + release funds
+/api/stellar/balance	**GET**	Check wallet **USDC** balance
+/api/stellar/add-trustline	**POST**	Add **USDC** trustline to wallet
+/api/setup	**GET**	Configure platform wallet
+/api/cron/check-deadlines	**GET**	Auto-resolve expired bounties
+Escrow Flow (On-Chain)
+text
+Creator clicks *Create & Lock Funds*
+    → **POST** /deployer/single-release  → unsigned **XDR**
+    → Sign **XDR** with platform Stellar keypair
+    → **POST** /helper/send-transaction  → contractId (real Stellar address)
+    → **POST** /escrow/single-release/fund-escrow → lock prize pool
+
+Teams register, submit, vote Judges score all entries
+
+Creator finalizes
     → approve-milestone → sign + submit
     → release-funds     → sign + submit
-  → Final state: Released
+    → Funds sent to winning team wallet
 
-Verifier rejects / user disputes
-  → POST /api/dispute
-    → build-dispute-xdr → signed by client wallet
-    → send-signed-xdr
-    → resolve-dispute (platform signs refund)
-  → Final state: Refunded
-```
+If judges miss deadline:
+    → Auto-resolve by community votes
+    → Release funds to community-chosen winner
+### Key Design Choices
+Team wallet identity — Teams are identified by Stellar wallet addresses, enabling multi-sig treasuries
 
----
+Constrained peer review — Each team reviews only themselves + one randomly assigned peer, preventing collusion
 
-## Key design choices
+Hybrid weighted scoring — Judges dominate (70%) but community has meaningful input (30%)
 
-- **Vercel AI SDK Core** — Uses the latest `ai` package for flexible model orchestration. Supports Anthropic, OpenAI, and Google via a unified interface or Vercel AI Gateway.
-- **Single-release escrow** — One financial decision gate.
-- **Server-signed XDR** — Platform transactions (Deploy, Fund, Release, Resolve) are signed on the server. Disputes are signed by the user's browser wallet (Freighter).
-- **Adversarial verifier** — Scrutinizes agent output for quality and fabrication.
-- **x402 micropayments** — Integrated into tool execution for granular cost tracking.
+Immutable prize pools — Creator cannot withdraw funds once escrow is locked
 
----
+Auto-resolution fallback — Community votes decide winners if judges fail to meet deadlines
 
-## Current limitations
+Server-signed transactions — Platform signs all escrow operations; disputes can involve user signatures
 
-- **Server-managed platform wallets** — Secret keys are env vars. Production needs a KMS or HSM for the platform wallet.
-- **Testnet only** — Point `TW_API_BASE` to `https://api.trustlesswork.com` and swap keys for mainnet.
-- **x402 on Base Sepolia only** — x402 micropayments run on EVM (Base Sepolia). Stellar-native micropayments are a v2 roadmap item.
-# proof_pool
+No AI dependency — Pure competition logic, no model APIs required
+
+### Current Limitations
+
+Testnet only — Point TW_API_BASE to production **API** and swap keys for mainnet
+
+Server-managed platform wallet — Secret keys in env vars; production needs **KMS**/**HSM**
+
+Manual judge coordination — Judges must visit the bounty page to submit scores
+
+No on-chain reputation yet — Reputation tables exist in schema but are not yet active

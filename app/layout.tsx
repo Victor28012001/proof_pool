@@ -5,7 +5,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   icons: {
-    icon: '/logo.svg',
+    icon: '/logo.jpg',
   },
   title: "BountyProtocol — Trust-minimized competitions",
   description:

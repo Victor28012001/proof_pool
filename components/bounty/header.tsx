@@ -6,7 +6,7 @@ import Image from "next/image";
 export function Logo({ size = 28 }: { size?: number }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-      <Image src="/logo.svg" alt="Logo" width={size} height={size} />
+      <Image src="/logo.jpg" alt="Logo" width={size} height={size} />
       <span
         style={{
           fontFamily: "var(--geist-font-sans)",

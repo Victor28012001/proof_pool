@@ -105,31 +105,45 @@ const db = (() => {
     const sql = neon(DATABASE_URL!);
     return {
       run: async (query: string, ...params: any[]) => {
-        await (sql as any).query(transformQuery(query), params);
+        const transformed = transformQuery(query);
+        // Neon query expects params spread, not as array
+        if (params.length === 1 && Array.isArray(params[0])) {
+          await (sql as any).query(transformed, params[0]);
+        } else {
+          await (sql as any).query(transformed, params);
+        }
       },
       get: async <T>(query: string, ...params: any[]): Promise<T | null> => {
-        const rows = await (sql as any).query(transformQuery(query), params);
+        const transformed = transformQuery(query);
+        const flatParams = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+        const rows = await (sql as any).query(transformed, flatParams);
         return (rows[0] as T) || null;
       },
       all: async <T>(query: string, ...params: any[]): Promise<T[]> => {
-        return (await (sql as any).query(transformQuery(query), params)) as T[];
+        const transformed = transformQuery(query);
+        const flatParams = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+        return (await (sql as any).query(transformed, flatParams)) as T[];
       },
       exec: async (query: string) => {
         await (sql as any).query(query);
       }
     };
   } else {
+    // SQLite stays the same
     const DB_PATH = process.env.BOUNTY_DB_PATH || path.join(process.cwd(), "bounty.db");
     const sqlite = new Database(DB_PATH);
     return {
       run: async (query: string, ...params: any[]) => {
-        sqlite.prepare(query).run(...params);
+        const flatParams = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+        sqlite.prepare(query).run(...flatParams);
       },
       get: async <T>(query: string, ...params: any[]): Promise<T | null> => {
-        return (sqlite.prepare(query).get(...params) as T) || null;
+        const flatParams = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+        return (sqlite.prepare(query).get(...flatParams) as T) || null;
       },
       all: async <T>(query: string, ...params: any[]): Promise<T[]> => {
-        return sqlite.prepare(query).all(...params) as T[];
+        const flatParams = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+        return sqlite.prepare(query).all(...flatParams) as T[];
       },
       exec: async (query: string) => {
         sqlite.exec(query);
@@ -244,14 +258,14 @@ export { db, ensureSchema };
 export async function getBountyBundle(bountyId: string) {
   await ensureSchema();
   
-  const bounty = await db.get<BountyRow>("SELECT * FROM bounties WHERE id = ?", [bountyId]);
+  const bounty = await db.get<BountyRow>("SELECT * FROM bounties WHERE id = ?", bountyId);
   if (!bounty) return null;
 
-  const teams = await db.all<TeamRow>("SELECT * FROM teams WHERE bounty_id = ?", [bountyId]);
-  const judges = await db.all<JudgeRow>("SELECT * FROM judges WHERE bounty_id = ?", [bountyId]);
-  const judgeScores = await db.all<JudgeScoreRow>("SELECT * FROM judge_scores WHERE bounty_id = ?", [bountyId]);
-  const votes = await db.all<VoteRevealRow>("SELECT * FROM vote_reveals WHERE bounty_id = ?", [bountyId]);
-  const finalScores = await db.all<FinalScoreRow>("SELECT * FROM final_scores WHERE bounty_id = ? ORDER BY rank", [bountyId]);
+  const teams = await db.all<TeamRow>("SELECT * FROM teams WHERE bounty_id = ?", bountyId);
+  const judges = await db.all<JudgeRow>("SELECT * FROM judges WHERE bounty_id = ?", bountyId);
+  const judgeScores = await db.all<JudgeScoreRow>("SELECT * FROM judge_scores WHERE bounty_id = ?", bountyId);
+  const votes = await db.all<VoteRevealRow>("SELECT * FROM vote_reveals WHERE bounty_id = ?", bountyId);
+  const finalScores = await db.all<FinalScoreRow>("SELECT * FROM final_scores WHERE bounty_id = ? ORDER BY rank", bountyId);
 
   return {
     bounty: {
@@ -272,7 +286,7 @@ export async function getBountyBundle(bountyId: string) {
 // Check if judging deadline exceeded and resolve automatically
 export async function checkAndAutoResolve(bountyId: string): Promise<boolean> {
   await ensureSchema();
-  const bounty = await db.get<BountyRow>("SELECT * FROM bounties WHERE id = ?", [bountyId]);
+  const bounty = await db.get<BountyRow>("SELECT * FROM bounties WHERE id = ?", bountyId);
   if (!bounty) return false;
 
   const now = new Date();
@@ -416,6 +430,26 @@ export async function createBounty(data: {
   const bountyId = randomUUID();
   const now = new Date().toISOString();
   
+  // Build params array explicitly - 16 parameters
+  const params = [
+    bountyId,
+    data.creator_address,
+    data.title,
+    data.description || '',
+    JSON.stringify(data.prize_distributions),
+    data.total_prize_pool,
+    now,
+    now,
+    data.registration_end,
+    data.registration_end,
+    data.submission_end,
+    data.judging_start,
+    data.judging_end,
+    data.disbursement_time,
+    JSON.stringify(data.judge_addresses),
+    data.judge_count
+  ];
+
   await db.run(`
     INSERT INTO bounties (
       id, creator_address, title, description, prize_distributions, total_prize_pool,
@@ -423,15 +457,7 @@ export async function createBounty(data: {
       submission_start, submission_end, judging_start, judging_end,
       disbursement_time, judge_addresses, judge_count
     ) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, [
-    bountyId, data.creator_address, data.title, data.description,
-    JSON.stringify(data.prize_distributions), data.total_prize_pool,
-    now, now, data.registration_end,
-    data.registration_end, data.submission_end,
-    data.judging_start, data.judging_end,
-    data.disbursement_time, JSON.stringify(data.judge_addresses),
-    data.judge_count
-  ]);
+  `, ...params);
 
   // Pre-register judges
   for (const judgeAddress of data.judge_addresses) {
@@ -447,13 +473,13 @@ export async function createBounty(data: {
 // Update bounty status
 export async function updateBountyStatus(bountyId: string, status: string) {
   await ensureSchema();
-  await db.run("UPDATE bounties SET status = ? WHERE id = ?", [status, bountyId]);
+  await db.run("UPDATE bounties SET status = ? WHERE id = ?", status, bountyId);
 }
 
 // Set escrow contract
 export async function setBountyEscrow(bountyId: string, escrowId: string) {
   await ensureSchema();
-  await db.run("UPDATE bounties SET escrow_id = ? WHERE id = ?", [escrowId, bountyId]);
+  await db.run("UPDATE bounties SET escrow_id = ? WHERE id = ?", escrowId, bountyId);
 }
 
 // Register team
@@ -462,7 +488,7 @@ export async function registerTeam(bountyId: string, teamName: string, teamWalle
   
   const existing = await db.get<{ team_id: string }>(
     "SELECT team_id FROM teams WHERE bounty_id = ? AND team_wallet = ?", 
-    [bountyId, teamWallet]
+    bountyId, teamWallet
   );
   if (existing) throw new Error("Team wallet already registered for this bounty");
   
@@ -471,18 +497,18 @@ export async function registerTeam(bountyId: string, teamName: string, teamWalle
   
   await db.run(
     "INSERT INTO teams (team_id, bounty_id, team_name, team_wallet, members, registered_at) VALUES (?, ?, ?, ?, '[]', ?)",
-    [teamId, bountyId, teamName, teamWallet, now]
+    teamId, bountyId, teamName, teamWallet, now
   );
 
   // Randomly assign a peer reviewer
   const teams = await db.all<{ team_id: string }>(
     "SELECT team_id FROM teams WHERE bounty_id = ? AND team_id != ?", 
-    [bountyId, teamId]
+    bountyId, teamId
   );
   if (teams.length > 0) {
     const randomIndex = Math.floor(Math.random() * teams.length);
     const randomPeer = teams[randomIndex].team_id;
-    await db.run("UPDATE teams SET assigned_peer_team_id = ? WHERE team_id = ?", [randomPeer, teamId]);
+    await db.run("UPDATE teams SET assigned_peer_team_id = ? WHERE team_id = ?", randomPeer, teamId);
   }
 
   return teamId;
@@ -493,7 +519,7 @@ export async function submitTeamWork(bountyId: string, teamId: string, submissio
   await ensureSchema();
   await db.run(
     "UPDATE teams SET submission_hash = ? WHERE team_id = ? AND bounty_id = ?", 
-    [submissionHash, teamId, bountyId]
+    submissionHash, teamId, bountyId
   );
 }
 
@@ -503,7 +529,7 @@ export async function judgeAccept(bountyId: string, judgeAddress: string) {
   const now = new Date().toISOString();
   await db.run(
     "UPDATE judges SET accepted = 1, committed_at = ? WHERE bounty_id = ? AND address = ?",
-    [now, bountyId, judgeAddress]
+    now, bountyId, judgeAddress
   );
 }
 
@@ -524,21 +550,21 @@ export async function submitJudgeScore(bountyId: string, judgeAddress: string, s
   await db.run(
     `INSERT INTO judge_scores (id, bounty_id, judge_address, team_id, creativity, execution, impact, presentation, overall, feedback, submitted_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, bountyId, judgeAddress, scores.team_id, scores.creativity, scores.execution, 
-     scores.impact, scores.presentation, scores.overall, scores.feedback || '', now]
+    id, bountyId, judgeAddress, scores.team_id, scores.creativity, scores.execution, 
+    scores.impact, scores.presentation, scores.overall, scores.feedback || '', now
   );
   
   // Check if judge has scored all teams
-  const teams = await db.all("SELECT team_id FROM teams WHERE bounty_id = ?", [bountyId]);
-  const scoredTeams = await db.all(
+  const teams = await db.all<{ team_id: string }>("SELECT team_id FROM teams WHERE bounty_id = ?", bountyId);
+  const scoredTeams = await db.all<{ team_id: string }>(
     "SELECT DISTINCT team_id FROM judge_scores WHERE bounty_id = ? AND judge_address = ?",
-    [bountyId, judgeAddress]
+    bountyId, judgeAddress
   );
   
   if (scoredTeams.length >= teams.length) {
     await db.run(
       "UPDATE judges SET score_submitted = 1 WHERE bounty_id = ? AND address = ?",
-      [bountyId, judgeAddress]
+      bountyId, judgeAddress
     );
   }
 }
@@ -551,6 +577,6 @@ export async function revealVote(bountyId: string, teamId: string, selfScore: nu
   
   await db.run(
     "INSERT INTO vote_reveals (id, bounty_id, team_id, self_score, peer_score, peer_team_id, revealed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [id, bountyId, teamId, selfScore, peerScore, peerTeamId, now]
+    id, bountyId, teamId, selfScore, peerScore, peerTeamId, now
   );
 }

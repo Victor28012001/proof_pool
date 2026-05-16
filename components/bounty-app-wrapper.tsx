@@ -39,14 +39,29 @@ export function BountyAppWrapper({ onBack }: { onBack?: () => void }) {
   useEffect(() => {
     const initKit = async () => {
       try {
-        const { StellarWalletsKit, Networks } =
+        const { StellarWalletsKit, Networks, KitEventType } =
           await import("@creit.tech/stellar-wallets-kit");
-        const { defaultModules } =
-          await import("@creit.tech/stellar-wallets-kit/modules/utils");
+
+        // Import modules individually - these are the correct paths
+        const { FreighterModule } =
+          await import("@creit.tech/stellar-wallets-kit/modules/freighter");
+        const { AlbedoModule } =
+          await import("@creit.tech/stellar-wallets-kit/modules/albedo");
+        // const { XBullModule } = await import("@creit.tech/stellar-wallets-kit/modules/xbull");
+        const { LobstrModule } =
+          await import("@creit.tech/stellar-wallets-kit/modules/lobstr");
+        const { RabetModule } =
+          await import("@creit.tech/stellar-wallets-kit/modules/rabet");
 
         StellarWalletsKit.init({
           network: Networks.TESTNET,
-          modules: defaultModules(),
+          modules: [
+            new AlbedoModule(),
+            new FreighterModule(),
+            // new XBullModule(),
+            new LobstrModule(),
+            new RabetModule(),
+          ],
         });
 
         // Auto-reconnect
@@ -80,6 +95,7 @@ export function BountyAppWrapper({ onBack }: { onBack?: () => void }) {
         return;
       }
 
+      // This will show a modal with all available wallets including Albedo
       const { address } = await StellarWalletsKit.authModal();
       if (address) {
         setClientPub(address);
@@ -119,35 +135,64 @@ export function BountyAppWrapper({ onBack }: { onBack?: () => void }) {
       });
       const responseData = await res.json();
       if (responseData.error) throw new Error(responseData.error);
-
       const bountyId = responseData.bounty?.id;
-      if (!bountyId)
-        throw new Error("Failed to create bounty - no ID returned");
+      if (!bountyId) throw new Error("Failed to create bounty");
 
-      // Step 2: Fund the escrow
-      setLoadingLabel("Locking funds in escrow...");
-      try {
-        const fundRes = await fetch(`/api/bounties/${bountyId}/fund`, {
+      // Step 2: Deploy escrow + get fund XDR
+      setLoadingLabel("Deploying escrow...");
+      const fundRes = await fetch(`/api/bounties/${bountyId}/fund`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ funder_address: clientPub }),
+      });
+      const fundData = await fundRes.json();
+      if (fundData.error) throw new Error(fundData.error);
+
+      // Step 3: If needs signature, prompt user to sign
+      if (fundData.needsSignature) {
+        setLoadingLabel("Please sign the transaction in your wallet...");
+
+        const { StellarWalletsKit, Networks } =
+          await import("@creit.tech/stellar-wallets-kit");
+
+        // Get the current wallet address
+        const { address } = await StellarWalletsKit.getAddress();
+
+        console.log("Signing with address:", address);
+        console.log(
+          "Unsigned XDR:",
+          fundData.unsignedTransaction.substring(0, 50) + "...",
+        );
+
+        // Sign the transaction - this should trigger Albedo popup
+        const { signedTxXdr } = await StellarWalletsKit.signTransaction(
+          fundData.unsignedTransaction,
+          {
+            address: address,
+            networkPassphrase: Networks.TESTNET,
+          },
+        );
+
+        if (!signedTxXdr) {
+          throw new Error("Transaction signing was cancelled or failed");
+        }
+
+        // Submit the signed transaction
+        setLoadingLabel("Funding escrow...");
+        const submitRes = await fetch(`/api/bounties/${bountyId}/fund`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ funder_address: clientPub }),
+          body: JSON.stringify({
+            funder_address: clientPub,
+            signedXdr: signedTxXdr,
+          }),
         });
-        const fundData = await fundRes.json();
-        if (fundData.error) throw new Error(fundData.error);
-
-        setBountyBundle(fundData);
-        fetchBalance(clientPub!);
-      } catch (fundErr) {
-        // Funding failed, but bounty was created - show error
-        console.error("Funding failed:", fundErr);
-        setError(
-          `Bounty created but funding failed: ${fundErr instanceof Error ? fundErr.message : "Unknown error"}`,
-        );
-        // Still show the bounty so they can try again
-        const bundleRes = await fetch(`/api/bounties/${bountyId}`);
-        const bundle = await bundleRes.json();
-        setBountyBundle(bundle);
+        const submitData = await submitRes.json();
+        if (submitData.error) throw new Error(submitData.error);
+        setBountyBundle(submitData);
       }
+
+      fetchBalance(clientPub!);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);

@@ -1,7 +1,7 @@
-import { Keypair, Transaction, Networks } from "@stellar/stellar-sdk";
+import { Keypair, TransactionBuilder, Networks } from "@stellar/stellar-sdk";
 import crypto from "crypto";
 
-const TW_API_BASE = (process.env.TW_API_BASE || "").replace(/\/$/, ""); // Remove trailing slash
+const TW_API_BASE = (process.env.TW_API_BASE || "").replace(/\/$/, "");
 const TW_API_KEY = process.env.TW_API_KEY ?? "";
 
 const STELLAR_NETWORK = process.env.STELLAR_NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
@@ -14,14 +14,7 @@ function getPlatformKeypair(): Keypair {
       if (!secret.startsWith('S')) {
         throw new Error("PLATFORM_STELLAR_SECRET must start with 'S'");
       }
-      const kp = Keypair.fromSecret(secret);
-      const expectedPub = process.env.PLATFORM_STELLAR_PUBLIC_KEY;
-      if (expectedPub && kp.publicKey() !== expectedPub) {
-        console.error("KEY MISMATCH! Secret key doesn't match public key");
-        console.error("Secret generates:", kp.publicKey());
-        console.error("Expected:", expectedPub);
-      }
-      return kp;
+      return Keypair.fromSecret(secret);
     } catch (err) {
       console.error("Invalid PLATFORM_STELLAR_SECRET:", err);
       throw new Error("Invalid Stellar secret key.");
@@ -57,35 +50,88 @@ function isConfigured(): boolean {
 async function twRequest<T = Record<string, unknown>>(
   method: "POST" | "PUT" | "GET",
   path: string,
-  body?: unknown
+  body?: unknown,
+  retries = 3
 ): Promise<T> {
   if (!isConfigured()) throw new Error("Trustless Work not configured");
 
   const url = `${TW_API_BASE}${path}`;
-  console.log(`TW Request: ${method} ${url}`, body ? JSON.stringify(body).substring(0, 200) : '');
 
-  const res = await fetch(url, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": TW_API_KEY,
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`TW Request (attempt ${attempt}/${retries}): ${method} ${url}`);
 
-  if (!res.ok) {
-    const text = await res.text();
-    console.error(`TW API error (${res.status}):`, text);
-    throw new Error(`TW API error: ${text}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+      const res = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": TW_API_KEY,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const text = await res.text();
+        console.error(`TW API error (${res.status}):`, text);
+
+        if (res.status === 400) {
+          throw new Error(`TW API error: ${text}`);
+        }
+
+        if (attempt < retries) {
+          const delay = attempt * 2000;
+          console.log(`Retrying in ${delay}ms...`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+
+        throw new Error(`TW API error: ${text}`);
+      }
+
+      return res.json();
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        console.error(`Request timeout (attempt ${attempt}/${retries})`);
+        if (attempt < retries) {
+          const delay = attempt * 2000;
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw new Error(`Request timed out after ${retries} attempts`);
+      }
+
+      if (err.message?.includes('fetch failed') && attempt < retries) {
+        const delay = attempt * 2000;
+        console.log(`Network error, retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+
+      throw err;
+    }
   }
 
-  return res.json();
+  throw new Error(`Failed after ${retries} attempts`);
 }
 
 function signAndEncodeXdr(unsignedXdr: string, keypair: Keypair): string {
-  const tx = new Transaction(unsignedXdr, STELLAR_NETWORK);
+  console.log("Signing with public key:", keypair.publicKey());
+  
+  // Use TransactionBuilder.fromXDR for proper parsing
+  const tx = TransactionBuilder.fromXDR(unsignedXdr, STELLAR_NETWORK) as any;
+  
+  // Sign the transaction
   tx.sign(keypair);
-  return tx.toEnvelope().toXDR("base64");
+  
+  const signedXdr = tx.toEnvelope().toXDR("base64");
+  console.log("Signed XDR length:", signedXdr.length);
+  return signedXdr;
 }
 
 async function buildSignSubmit(
@@ -93,29 +139,38 @@ async function buildSignSubmit(
   body: unknown,
   signerKeypair: Keypair
 ): Promise<{ txHash: string; contractId?: string }> {
-  const buildRes = await twRequest<{ unsignedTransaction?: string; contractId?: string; engagementId?: string }>(
-    "POST", path, body
-  );
+  const buildRes = await twRequest<{ 
+    unsignedTransaction?: string; 
+    contractId?: string; 
+    engagementId?: string;
+    status?: string;
+  }>("POST", path, body);
 
   if (!buildRes.unsignedTransaction) {
     throw new Error(`No unsigned transaction in response from ${path}`);
   }
 
-  const signedXdr = signAndEncodeXdr(buildRes.unsignedTransaction, signerKeypair);
+  console.log("Unsigned XDR received, length:", buildRes.unsignedTransaction.length);
 
-  const submitRes = await twRequest<{ status: string; message?: string }>(
+  const signedXdr = signAndEncodeXdr(buildRes.unsignedTransaction, signerKeypair);
+  
+  console.log("Signed XDR, length:", signedXdr.length);
+
+  const submitRes = await twRequest<{ status: string; message?: string; details?: any }>(
     "POST", "/helper/send-transaction", { signedXdr }
   );
 
+  console.log("Submit response status:", submitRes.status);
+
   if (submitRes.status !== "SUCCESS") {
-    throw new Error(`Transaction submission failed: ${submitRes.message || submitRes.status}`);
+    console.error("Submit failed:", JSON.stringify(submitRes));
+    throw new Error(`Transaction submission failed: ${submitRes.message || JSON.stringify(submitRes)}`);
   }
 
   const txHash = crypto.createHash("sha256").update(signedXdr).digest("hex");
   return { txHash, contractId: buildRes.contractId };
 }
 
-// Deploy escrow - using the correct API path
 export async function deployBountyEscrow(
   bountyId: string,
   prizePool: string,
@@ -124,93 +179,196 @@ export async function deployBountyEscrow(
   if (!isConfigured()) throw new Error("Trustless Work not configured");
 
   const platformPub = getPlatformPublicKey();
-  
+  const platformKp = getPlatformKeypair();
+  const resolverPub = getResolverPublicKey();
+
   console.log("Deploying escrow for bounty:", bountyId, "amount:", prizePool);
-  console.log("Platform wallet:", platformPub);
-  console.log("Creator wallet:", creatorAddress);
 
-  const result = await buildSignSubmit(
-    "/deployer/single-release",
-    {
-      signer: creatorAddress,
-      engagementId: bountyId,
-      title: `Bounty: ${bountyId.slice(0, 8)}`,
-      description: "Trust-minimized competition escrow",
-      amount: Number(prizePool),
-      platformFee: 5,
-      milestones: [{ description: "Competition completed - winner selected" }],
-      roles: {
-        approver: platformPub,
-        serviceProvider: platformPub,     // Platform provides the service
-        platformAddress: platformPub,
-        releaseSigner: platformPub,
-        disputeResolver: getResolverPublicKey(),
-        receiver: platformPub             // Platform receives funds first, then distributes
-      },
-      trustline: {
-        symbol: "USDC",
-        address: USDC_TESTNET_ISSUER
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      console.log(`Deploy attempt ${attempt}/3...`);
+      
+      const buildRes = await twRequest<{ 
+        status: string;
+        unsignedTransaction?: string;
+        contractId?: string;
+      }>(
+        "POST",
+        "/deployer/single-release",
+        {
+          signer: platformPub,  // PLATFORM signs, not creator
+          engagementId: `${bountyId}-${Date.now()}`,
+          title: `Bounty: ${bountyId.slice(0, 8)}`,
+          description: "Trust-minimized competition escrow",
+          amount: Number(prizePool),
+          platformFee: 5,
+          milestones: [{ 
+            description: "Competition completed - winner selected" 
+          }],
+          roles: {
+            approver: platformPub,
+            serviceProvider: platformPub,
+            platformAddress: platformPub,
+            releaseSigner: platformPub,
+            disputeResolver: resolverPub,
+            receiver: platformPub
+          },
+          trustline: {
+            symbol: "USDC",
+            address: USDC_TESTNET_ISSUER
+          }
+        }
+      );
+
+      if (!buildRes.unsignedTransaction) {
+        throw new Error("No unsigned transaction returned");
       }
-    },
-    getPlatformKeypair()
-  );
 
-  return {
-    escrowId: result.contractId || `escrow_${bountyId.slice(0, 8)}`,
-    deployTxHash: result.txHash
-  };
+      // Sign with PLATFORM keypair since we set platform as signer
+      const signedXdr = signAndEncodeXdr(buildRes.unsignedTransaction, platformKp);
+      
+      const submitRes = await twRequest<{ 
+        status: string; 
+        message?: string; 
+        contractId?: string;
+      }>(
+        "POST",
+        "/helper/send-transaction",
+        { signedXdr }
+      );
+
+      if (submitRes.status === "SUCCESS") {
+        const txHash = crypto.createHash("sha256").update(signedXdr).digest("hex");
+        const contractId = buildRes.contractId || submitRes.contractId || `escrow_${bountyId.slice(0, 8)}`;
+        console.log("Escrow deployed! Contract:", contractId);
+        return { escrowId: contractId, deployTxHash: txHash };
+      }
+
+      console.warn(`Attempt ${attempt} failed:`, submitRes.message);
+      
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    } catch (err: any) {
+      console.warn(`Attempt ${attempt} error:`, err.message);
+      if (attempt < 3) {
+        await new Promise(r => setTimeout(r, 2000));
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  throw new Error("Failed to deploy escrow after 3 attempts");
 }
 
-// Fund escrow
 export async function fundEscrow(
   escrowId: string,
   amount: string,
-  funderAddress: string
+  signerAddress: string
 ): Promise<{ fundTxHash: string }> {
   if (!isConfigured()) throw new Error("Trustless Work not configured");
 
-  const result = await buildSignSubmit(
+  console.log("Funding escrow:", escrowId, "amount:", amount, "signer:", signerAddress);
+
+  // Step 1: Build the funding transaction
+  const buildRes = await twRequest<{ 
+    status: string;
+    unsignedTransaction?: string;
+  }>(
+    "POST", 
     "/escrow/single-release/fund-escrow",
     {
       contractId: escrowId,
-      amount: Number(amount),
-      signer: funderAddress
-    },
-    getPlatformKeypair()
+      signer: signerAddress,
+      amount: Number(amount)
+    }
   );
 
-  return { fundTxHash: result.txHash };
+  if (!buildRes.unsignedTransaction) {
+    throw new Error("No unsigned transaction returned from fund-escrow");
+  }
+
+  console.log("Fund unsigned XDR length:", buildRes.unsignedTransaction.length);
+
+  // Step 2: Sign with platform keypair
+  const platformKp = getPlatformKeypair();
+  const signedXdr = signAndEncodeXdr(buildRes.unsignedTransaction, platformKp);
+  
+  console.log("Fund signed XDR length:", signedXdr.length);
+
+  // Step 3: Submit to Stellar
+  const submitRes = await twRequest<{ status: string; message?: string }>(
+    "POST",
+    "/helper/send-transaction",
+    { signedXdr }
+  );
+
+// Log the full response for debugging
+console.log("Submit response:", JSON.stringify(submitRes).substring(0, 500));
+
+  if (submitRes.status !== "SUCCESS") {
+    throw new Error(`Fund transaction failed: ${submitRes.message || JSON.stringify(submitRes)}`);
+  }
+
+  const txHash = crypto.createHash("sha256").update(signedXdr).digest("hex");
+  return { fundTxHash: txHash };
 }
 
-// Release funds to winner
 export async function releaseFunds(escrowId: string): Promise<{ txHash: string }> {
   if (!isConfigured()) throw new Error("Trustless Work not configured");
 
   const platformKp = getPlatformKeypair();
+  const platformPub = platformKp.publicKey();
 
-  // Approve milestone
-  await buildSignSubmit(
+  // Step 1: Approve the milestone
+  console.log("Approving milestone for:", escrowId);
+  const approveRes = await twRequest<{ status: string; unsignedTransaction?: string }>(
+    "POST",
     "/escrow/single-release/approve-milestone",
     {
       contractId: escrowId,
       milestoneIndex: "0",
-      approver: platformKp.publicKey()
-    },
-    platformKp
+      approver: platformPub
+    }
   );
 
-  // Release funds
-  return buildSignSubmit(
+  if (approveRes.unsignedTransaction) {
+    const signedApproveXdr = signAndEncodeXdr(approveRes.unsignedTransaction, platformKp);
+    await twRequest("POST", "/helper/send-transaction", { signedXdr: signedApproveXdr });
+  }
+
+  // Step 2: Release the funds
+  console.log("Releasing funds for:", escrowId);
+  const releaseRes = await twRequest<{ status: string; unsignedTransaction?: string }>(
+    "POST",
     "/escrow/single-release/release-funds",
     {
       contractId: escrowId,
-      releaseSigner: platformKp.publicKey()
-    },
-    platformKp
+      releaseSigner: platformPub
+    }
   );
+
+  if (!releaseRes.unsignedTransaction) {
+    throw new Error("No unsigned transaction for release");
+  }
+
+  const signedReleaseXdr = signAndEncodeXdr(releaseRes.unsignedTransaction, platformKp);
+  
+  const submitRes = await twRequest<{ status: string }>(
+    "POST",
+    "/helper/send-transaction",
+    { signedXdr: signedReleaseXdr }
+  );
+
+  if (submitRes.status !== "SUCCESS") {
+    throw new Error("Release transaction failed");
+  }
+
+  const txHash = crypto.createHash("sha256").update(signedReleaseXdr).digest("hex");
+  return { txHash };
 }
 
-// Dispute handling
 export async function disputeEscrow(escrowId: string): Promise<{ txHash: string }> {
   const platformKp = getPlatformKeypair();
   return buildSignSubmit(
